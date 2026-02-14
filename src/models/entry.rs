@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+const MAX_ENTRY_ID_LEN: usize = 256;
+const MAX_ENCRYPTED_PAYLOAD_LEN: usize = 700_000;
+
 /// Entry as sent/received over the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,22 +19,37 @@ pub struct SyncEntry {
 
 impl SyncEntry {
     pub fn validate(&self) -> Result<(), String> {
-        if self.id.is_empty() || self.id.len() > 256 {
-            return Err(format!("id length must be 1-256, got {}", self.id.len()));
+        if self.id.is_empty() || self.id.len() > MAX_ENTRY_ID_LEN {
+            return Err(format!(
+                "id length must be 1-{MAX_ENTRY_ID_LEN}, got {}",
+                self.id.len()
+            ));
         }
         if self.updated_at <= 0 {
             return Err("updatedAt must be positive".into());
         }
-        if self.encrypted_payload.is_empty() || self.encrypted_payload.len() > 700_000 {
-            return Err(format!(
-                "encryptedPayload length must be 1-700000, got {}",
-                self.encrypted_payload.len()
-            ));
-        }
-        if self.integrity_hash.len() != 64
-            || !self.integrity_hash.chars().all(|c| c.is_ascii_hexdigit())
-        {
-            return Err("integrityHash must be exactly 64 hex chars".into());
+        if self.is_deleted {
+            // Deleted entries may have empty payload and hash
+            if self.encrypted_payload.len() > MAX_ENCRYPTED_PAYLOAD_LEN {
+                return Err(format!(
+                    "encryptedPayload length must be 0-{MAX_ENCRYPTED_PAYLOAD_LEN}, got {}",
+                    self.encrypted_payload.len()
+                ));
+            }
+        } else {
+            if self.encrypted_payload.is_empty()
+                || self.encrypted_payload.len() > MAX_ENCRYPTED_PAYLOAD_LEN
+            {
+                return Err(format!(
+                    "encryptedPayload length must be 1-{MAX_ENCRYPTED_PAYLOAD_LEN}, got {}",
+                    self.encrypted_payload.len()
+                ));
+            }
+            if self.integrity_hash.len() != 64
+                || !self.integrity_hash.chars().all(|c| c.is_ascii_hexdigit())
+            {
+                return Err("integrityHash must be exactly 64 hex chars".into());
+            }
         }
         Ok(())
     }
