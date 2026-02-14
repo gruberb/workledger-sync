@@ -13,8 +13,20 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release --bin workledger-sync
 
-# We do not need the Rust toolchain to run the binary!
 FROM debian:bookworm-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsqlite3-0 \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /data
+
 WORKDIR /app
 COPY --from=builder /app/target/release/workledger-sync /usr/local/bin
+
+ENV DATABASE_URL=sqlite:/data/workledger-sync.db
+
+EXPOSE 8080
+
 ENTRYPOINT ["/usr/local/bin/workledger-sync"]
