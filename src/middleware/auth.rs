@@ -1,6 +1,6 @@
 use axum::{
     extract::Request,
-    http::StatusCode,
+    http::{Method, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -16,6 +16,11 @@ const AUTH_TOKEN_HEADER: &str = "x-auth-token";
 pub async fn require_auth_token(mut req: Request, next: Next) -> Response {
     let method = req.method().clone();
     let uri = req.uri().path().to_string();
+
+    // Let CORS preflight requests through without auth
+    if method == Method::OPTIONS {
+        return next.run(req).await;
+    }
 
     let token = req
         .headers()
