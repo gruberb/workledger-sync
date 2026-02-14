@@ -1,0 +1,21 @@
+# Rust build artifacts
+/target/
+
+# SQLite databases (created at runtime)
+*.db
+*.db-shm
+*.db-wal
+
+# Environment
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

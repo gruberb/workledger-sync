@@ -1,0 +1,26 @@
+[package]
+name = "workledger-sync"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rand = "0.8"
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
+async-trait = "0.1"
+base64 = "0.22"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", features = ["hmac"] }
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+http-body-util = "0.1"
