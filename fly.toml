@@ -7,6 +7,7 @@ primary_region = "yyz"
   PORT = "8080"
   DATABASE_URL = "sqlite:/data/workledger-sync.db"
   RUST_LOG = "info"
+  CORS_ORIGINS = "https://workledger.org,http://localhost:5173"
 
 [http_service]
   internal_port = 8080

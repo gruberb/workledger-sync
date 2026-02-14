@@ -20,7 +20,7 @@ impl Config {
                 .unwrap_or_else(|_| "sqlite:workledger-sync.db".to_string()),
             cors_origins: env::var("CORS_ORIGINS")
                 .unwrap_or_else(|_| {
-                    "https://workledger.app,http://localhost:5173".to_string()
+                    "https://workledger.org,http://localhost:5173".to_string()
                 })
                 .split(',')
                 .map(|s| s.trim().to_string())
