@@ -8,9 +8,111 @@
   <style>
     body { margin: 0; background: #fafafa; }
     #swagger-ui .topbar { display: none; }
+    #token-helper {
+      max-width: 800px;
+      margin: 24px auto 0;
+      padding: 20px 24px;
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+    }
+    #token-helper summary {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 15px;
+      color: #333;
+      user-select: none;
+    }
+    #token-helper .inner { margin-top: 16px; }
+    #token-helper button {
+      background: #f97316;
+      color: #fff;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    #token-helper button:hover { background: #ea580c; }
+    #token-helper .result {
+      margin-top: 14px;
+      display: none;
+    }
+    #token-helper .field {
+      margin-top: 10px;
+    }
+    #token-helper label {
+      display: block;
+      font-weight: 600;
+      font-size: 12px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    #token-helper .value {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 13px;
+      background: #f5f5f5;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      padding: 8px 10px;
+      word-break: break-all;
+      position: relative;
+    }
+    #token-helper .copy-btn {
+      position: absolute;
+      right: 6px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: #e8e8e8;
+      border: none;
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      color: #555;
+    }
+    #token-helper .copy-btn:hover { background: #ddd; }
+    #token-helper .hint {
+      margin-top: 12px;
+      font-size: 13px;
+      color: #666;
+      line-height: 1.5;
+    }
   </style>
 </head>
 <body>
+  <details id="token-helper">
+    <summary>Generate test credentials</summary>
+    <div class="inner">
+      <p style="margin: 0 0 12px; color: #555; line-height: 1.5;">
+        Generate a random sync ID and its corresponding auth token for testing.
+        Click <strong>Authorize</strong> above and paste the auth token.
+      </p>
+      <button onclick="generate()">Generate</button>
+      <div class="result" id="result">
+        <div class="field">
+          <label>Sync ID (keep secret — do not send to server)</label>
+          <div class="value"><span id="sync-id"></span></div>
+        </div>
+        <div class="field">
+          <label>Auth Token (paste into Authorize dialog)</label>
+          <div class="value" style="position: relative;">
+            <span id="auth-token"></span>
+            <button class="copy-btn" onclick="copyToken()">Copy</button>
+          </div>
+        </div>
+        <div class="hint">
+          <strong>Next steps:</strong> Copy the auth token → click <strong>Authorize</strong> → paste → click <strong>Authorize</strong>.
+          Then use <code>POST /accounts</code> with <code>{"authToken": "..."}</code> (same value) to create the account before calling other endpoints.
+        </div>
+      </div>
+    </div>
+  </details>
   <div id="swagger-ui"></div>
   <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
   <script>
@@ -24,6 +126,27 @@
       ],
       layout: "BaseLayout"
     });
+
+    async function generate() {
+      const hex = (buf) => [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+      const randomHex = hex(crypto.getRandomValues(new Uint8Array(16)));
+      const syncId = "wl-" + randomHex;
+      const encoded = new TextEncoder().encode("auth:" + syncId);
+      const hash = await crypto.subtle.digest("SHA-256", encoded);
+      const authToken = hex(hash);
+
+      document.getElementById("sync-id").textContent = syncId;
+      document.getElementById("auth-token").textContent = authToken;
+      document.getElementById("result").style.display = "block";
+    }
+
+    function copyToken() {
+      const token = document.getElementById("auth-token").textContent;
+      navigator.clipboard.writeText(token);
+      const btn = document.querySelector(".copy-btn");
+      btn.textContent = "Copied!";
+      setTimeout(() => btn.textContent = "Copy", 1500);
+    }
   </script>
 </body>
 </html>

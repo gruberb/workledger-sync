@@ -1,2 +1,13 @@
-fly.toml
+target/
 .git/
+.gitignore
+*.db
+*.db-shm
+*.db-wal
+docs/
+.claude/
+CLAUDE.md
+README.md
+.dockerignore
+Dockerfile
+fly.toml
