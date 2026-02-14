@@ -6,6 +6,7 @@ use axum::{
 };
 
 use crate::sync_id::is_valid_auth_token;
+use crate::util::token_prefix;
 
 const AUTH_TOKEN_HEADER: &str = "x-auth-token";
 
@@ -31,7 +32,7 @@ pub async fn require_auth_token(mut req: Request, next: Next) -> Response {
     match token {
         Some(t) if is_valid_auth_token(&t) => {
             tracing::debug!(
-                auth_token = %&t[..12],
+                auth_token = %token_prefix(&t),
                 method = %method,
                 uri = %uri,
                 "Auth middleware: token valid, forwarding to handler"

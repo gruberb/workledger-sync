@@ -4,6 +4,7 @@ use rand::Rng;
 
 use crate::error::AppError;
 use crate::middleware::auth::AuthToken;
+use crate::util::token_prefix;
 use crate::models::account::{
     CreateAccountRequest, CreateAccountResponse, DeleteResponse, ValidateResponse,
 };
@@ -19,9 +20,13 @@ pub async fn create_account(
 ) -> Result<impl IntoResponse, AppError> {
     tracing::info!(
         handler = "create_account",
-        auth_token = %&body.auth_token[..std::cmp::min(12, body.auth_token.len())],
+        auth_token = %token_prefix(&body.auth_token),
         "Handler: POST /api/v1/accounts"
     );
+
+    if !state.rate_limiter.check(&body.auth_token).await {
+        return Err(AppError::TooManyRequests("Rate limit exceeded".into()));
+    }
 
     if !is_valid_auth_token(&body.auth_token) {
         tracing::warn!(handler = "create_account", "Validation failed: invalid auth token format");
@@ -36,7 +41,7 @@ pub async fn create_account(
 
     tracing::info!(
         handler = "create_account",
-        auth_token = %&body.auth_token[..12],
+        auth_token = %token_prefix(&body.auth_token),
         status = 201,
         "Responding: account created with salt"
     );
@@ -56,7 +61,7 @@ pub async fn validate_account(
 ) -> Result<impl IntoResponse, AppError> {
     tracing::info!(
         handler = "validate_account",
-        auth_token = %&auth_token[..12],
+        auth_token = %token_prefix(&auth_token),
         "Handler: GET /api/v1/accounts/validate"
     );
 
@@ -77,7 +82,7 @@ pub async fn validate_account(
 
             tracing::info!(
                 handler = "validate_account",
-                auth_token = %&auth_token[..12],
+                auth_token = %token_prefix(&auth_token),
                 entry_count = account.entry_count,
                 status = 200,
                 "Responding: account valid"
@@ -93,7 +98,7 @@ pub async fn validate_account(
         None => {
             tracing::info!(
                 handler = "validate_account",
-                auth_token = %&auth_token[..12],
+                auth_token = %token_prefix(&auth_token),
                 status = 200,
                 "Responding: account not found (valid=false)"
             );
@@ -114,7 +119,7 @@ pub async fn delete_account(
 ) -> Result<impl IntoResponse, AppError> {
     tracing::info!(
         handler = "delete_account",
-        auth_token = %&auth_token[..12],
+        auth_token = %token_prefix(&auth_token),
         "Handler: DELETE /api/v1/accounts"
     );
 
@@ -128,7 +133,7 @@ pub async fn delete_account(
 
     tracing::info!(
         handler = "delete_account",
-        auth_token = %&auth_token[..12],
+        auth_token = %token_prefix(&auth_token),
         status = 200,
         "Responding: account deleted"
     );

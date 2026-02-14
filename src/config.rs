@@ -7,6 +7,7 @@ pub struct Config {
     pub max_entries_per_account: i64,
     pub max_payload_bytes: usize,
     pub cleanup_inactive_days: i64,
+    pub rate_limit_account_creation: u32,
 }
 
 impl Config {
@@ -37,6 +38,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(90),
+            rate_limit_account_creation: env::var("RATE_LIMIT_ACCOUNT_CREATION")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
         }
     }
 }

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::entry::SyncEntry;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PushRequest {
     pub entries: Vec<SyncEntry>,
 }
@@ -38,6 +39,7 @@ pub struct PullResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FullSyncRequest {
     pub entries: Vec<SyncEntry>,
 }

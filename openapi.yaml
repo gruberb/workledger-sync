@@ -253,6 +253,8 @@ paths:
                 $ref: "#/components/schemas/CreateAccountResponse"
         "400":
           description: Invalid auth token format (must be 64 hex chars)
+        "409":
+          description: Account already exists
         "500":
           description: Server error
 

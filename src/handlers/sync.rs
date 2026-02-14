@@ -6,6 +6,7 @@ use axum::{
 
 use crate::error::AppError;
 use crate::middleware::auth::AuthToken;
+use crate::util::token_prefix;
 use crate::models::entry::SyncEntry;
 use crate::models::sync::{
     FullSyncRequest, FullSyncResponse, PullQuery, PullResponse, PushRequest, PushResponse,
@@ -21,7 +22,7 @@ pub async fn push(
 ) -> Result<impl IntoResponse, AppError> {
     tracing::info!(
         handler = "push",
-        auth_token = %&auth_token[..12],
+        auth_token = %token_prefix(&auth_token),
         entry_count = body.entries.len(),
         "Handler: POST /api/v1/sync/push"
     );
@@ -39,9 +40,15 @@ pub async fn push(
         "Repo returned: account found"
     );
 
-    if account.entry_count >= state.max_entries_per_account {
+    if account.entry_count + body.entries.len() as i64 > state.max_entries_per_account {
         tracing::warn!(handler = "push", "Entry limit exceeded");
         return Err(AppError::BadRequest("Entry limit exceeded".into()));
+    }
+
+    for entry in &body.entries {
+        if let Err(msg) = entry.validate() {
+            return Err(AppError::BadRequest(format!("Invalid entry '{}': {msg}", entry.id)));
+        }
     }
 
     let mut accepted = 0usize;
@@ -90,7 +97,7 @@ pub async fn push(
 
     tracing::info!(
         handler = "push",
-        auth_token = %&auth_token[..12],
+        auth_token = %token_prefix(&auth_token),
         accepted,
         conflicts = conflicts.len(),
         server_seq = current_seq,
@@ -112,11 +119,11 @@ pub async fn pull(
     Query(params): Query<PullQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let since = params.since.unwrap_or(0);
-    let limit = params.limit.unwrap_or(100).min(500);
+    let limit = params.limit.unwrap_or(100).clamp(1, 500);
 
     tracing::info!(
         handler = "pull",
-        auth_token = %&auth_token[..12],
+        auth_token = %token_prefix(&auth_token),
         since,
         limit,
         "Handler: GET /api/v1/sync/pull"
@@ -151,7 +158,7 @@ pub async fn pull(
 
     tracing::info!(
         handler = "pull",
-        auth_token = %&auth_token[..12],
+        auth_token = %token_prefix(&auth_token),
         returned = entries.len(),
         server_seq = current_seq,
         has_more,
@@ -174,16 +181,26 @@ pub async fn full_sync(
 ) -> Result<impl IntoResponse, AppError> {
     tracing::info!(
         handler = "full_sync",
-        auth_token = %&auth_token[..12],
+        auth_token = %token_prefix(&auth_token),
         client_entries = body.entries.len(),
         "Handler: POST /api/v1/sync/full"
     );
 
-    tracing::debug!(handler = "full_sync", "Dispatching to repo.account_exists");
-    if !state.repo.account_exists(&auth_token).await? {
-        return Err(AppError::NotFound("Account not found".into()));
+    let account = state
+        .repo
+        .find_account(&auth_token)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Account not found".into()))?;
+
+    if account.entry_count + body.entries.len() as i64 > state.max_entries_per_account {
+        return Err(AppError::BadRequest("Entry limit exceeded".into()));
     }
-    tracing::debug!(handler = "full_sync", "Repo returned: account exists");
+
+    for entry in &body.entries {
+        if let Err(msg) = entry.validate() {
+            return Err(AppError::BadRequest(format!("Invalid entry '{}': {msg}", entry.id)));
+        }
+    }
 
     let mut merged = 0usize;
 
@@ -206,7 +223,7 @@ pub async fn full_sync(
     }
 
     tracing::debug!(handler = "full_sync", "Dispatching to repo.get_all_entries");
-    let all_rows = state.repo.get_all_entries(&auth_token).await?;
+    let all_rows = state.repo.get_all_entries(&auth_token, state.max_entries_per_account).await?;
     let entries: Vec<SyncEntry> = all_rows.iter().map(|r| r.to_sync_entry()).collect();
     tracing::debug!(handler = "full_sync", total_entries = entries.len(), "Repo returned: all entries");
 
@@ -223,7 +240,7 @@ pub async fn full_sync(
 
     tracing::info!(
         handler = "full_sync",
-        auth_token = %&auth_token[..12],
+        auth_token = %token_prefix(&auth_token),
         merged,
         total_entries = entries.len(),
         server_seq = current_seq,

@@ -7,7 +7,7 @@ pub struct AccountInfo {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateAccountRequest {
     pub auth_token: String, // hex-encoded SHA-256("auth:" + syncId)
 }

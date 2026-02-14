@@ -7,7 +7,7 @@ use crate::models::account::AccountInfo;
 use crate::models::entry::{DbEntry, SyncEntry};
 use crate::models::sync::ConflictEntry;
 use crate::repository::{SyncRepository, UpsertResult};
-use crate::util::now_millis;
+use crate::util::{now_millis, token_prefix};
 
 pub struct SqliteRepository {
     pool: SqlitePool,
@@ -26,10 +26,22 @@ impl SqliteRepository {
 #[async_trait]
 impl SyncRepository for SqliteRepository {
     async fn create_account(&self, auth_token: &str, salt: &[u8]) -> Result<(), AppError> {
-        let token_prefix = &auth_token[..12];
-        tracing::debug!(auth_token = %token_prefix, "db: INSERT accounts");
+        let token_prefix = token_prefix(auth_token);
+        tracing::debug!(auth_token = %token_prefix, "db: creating account");
 
         let now = now_millis();
+
+        let mut tx = self.pool.begin().await?;
+
+        let exists: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM accounts WHERE sync_id = ?")
+                .bind(auth_token)
+                .fetch_optional(&mut *tx)
+                .await?;
+
+        if exists.is_some() {
+            return Err(AppError::Conflict("Account already exists".into()));
+        }
 
         sqlx::query(
             "INSERT INTO accounts (sync_id, salt, created_at, last_seen_at, entry_count) VALUES (?, ?, ?, ?, 0)",
@@ -38,23 +50,23 @@ impl SyncRepository for SqliteRepository {
         .bind(salt)
         .bind(now)
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
-
-        tracing::debug!(auth_token = %token_prefix, "db: account row inserted");
 
         sqlx::query("INSERT INTO sync_cursors (sync_id, next_seq) VALUES (?, 1)")
             .bind(auth_token)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
 
-        tracing::debug!(auth_token = %token_prefix, "db: sync cursor initialized at seq=1");
+        tx.commit().await?;
+
+        tracing::debug!(auth_token = %token_prefix, "db: account created");
 
         Ok(())
     }
 
     async fn find_account(&self, auth_token: &str) -> Result<Option<AccountInfo>, AppError> {
-        let token_prefix = &auth_token[..12];
+        let token_prefix = token_prefix(auth_token);
         tracing::debug!(auth_token = %token_prefix, "db: SELECT account");
 
         let row: Option<(i64, i64, Vec<u8>)> = sqlx::query_as(
@@ -81,7 +93,7 @@ impl SyncRepository for SqliteRepository {
     }
 
     async fn account_exists(&self, auth_token: &str) -> Result<bool, AppError> {
-        let token_prefix = &auth_token[..12];
+        let token_prefix = token_prefix(auth_token);
         tracing::debug!(auth_token = %token_prefix, "db: SELECT 1 (account exists check)");
 
         let exists: Option<(i64,)> =
@@ -97,7 +109,7 @@ impl SyncRepository for SqliteRepository {
     }
 
     async fn delete_account(&self, auth_token: &str) -> Result<bool, AppError> {
-        let token_prefix = &auth_token[..12];
+        let token_prefix = token_prefix(auth_token);
         tracing::debug!(auth_token = %token_prefix, "db: DELETE account (cascade)");
 
         let result = sqlx::query("DELETE FROM accounts WHERE sync_id = ?")
@@ -117,7 +129,7 @@ impl SyncRepository for SqliteRepository {
     }
 
     async fn update_last_seen(&self, auth_token: &str) -> Result<(), AppError> {
-        tracing::debug!(auth_token = %&auth_token[..12], "db: UPDATE last_seen_at");
+        tracing::debug!(auth_token = %token_prefix(auth_token), "db: UPDATE last_seen_at");
 
         sqlx::query("UPDATE accounts SET last_seen_at = ? WHERE sync_id = ?")
             .bind(now_millis())
@@ -125,7 +137,7 @@ impl SyncRepository for SqliteRepository {
             .execute(&self.pool)
             .await?;
 
-        tracing::debug!(auth_token = %&auth_token[..12], "db: last_seen_at updated");
+        tracing::debug!(auth_token = %token_prefix(auth_token), "db: last_seen_at updated");
 
         Ok(())
     }
@@ -135,13 +147,18 @@ impl SyncRepository for SqliteRepository {
         auth_token: &str,
         entry: &SyncEntry,
     ) -> Result<UpsertResult, AppError> {
-        let token_prefix = &auth_token[..12];
+        let token_prefix = token_prefix(auth_token);
         tracing::debug!(
             auth_token = %token_prefix,
             entry_id = %entry.id,
-            updated_at = entry.updated_at,
-            "db: upsert entry — checking existing"
+            "db: upsert entry"
         );
+
+        let payload = base64::engine::general_purpose::STANDARD
+            .decode(&entry.encrypted_payload)
+            .map_err(|_| AppError::BadRequest("Invalid base64 in encrypted_payload".into()))?;
+
+        let mut tx = self.pool.begin().await?;
 
         let existing: Option<DbEntry> = sqlx::query_as(
             "SELECT id, updated_at, is_archived, is_deleted, encrypted_payload, integrity_hash, server_seq \
@@ -149,64 +166,27 @@ impl SyncRepository for SqliteRepository {
         )
         .bind(auth_token)
         .bind(&entry.id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await?;
 
         if let Some(existing) = &existing {
-            tracing::debug!(
-                entry_id = %entry.id,
-                server_updated_at = existing.updated_at,
-                client_updated_at = entry.updated_at,
-                "db: existing entry found, comparing timestamps"
-            );
             if existing.updated_at >= entry.updated_at {
-                tracing::debug!(
-                    entry_id = %entry.id,
-                    server_seq = existing.server_seq,
-                    "db: conflict — server version newer, rejecting client entry"
-                );
+                // tx drops here → implicit rollback
                 return Ok(UpsertResult::Conflict(ConflictEntry {
                     id: entry.id.clone(),
                     server_updated_at: existing.updated_at,
                     server_seq: existing.server_seq,
                 }));
             }
-        } else {
-            tracing::debug!(entry_id = %entry.id, "db: no existing entry, will insert");
         }
 
-        tracing::debug!(auth_token = %token_prefix, "db: SELECT next_seq from sync_cursors");
-
-        let seq: (i64,) =
-            sqlx::query_as("SELECT next_seq FROM sync_cursors WHERE sync_id = ?")
-                .bind(auth_token)
-                .fetch_one(&self.pool)
-                .await?;
+        let seq: (i64,) = sqlx::query_as(
+            "UPDATE sync_cursors SET next_seq = next_seq + 1 WHERE sync_id = ? RETURNING next_seq - 1",
+        )
+        .bind(auth_token)
+        .fetch_one(&mut *tx)
+        .await?;
         let server_seq = seq.0;
-
-        tracing::debug!(
-            auth_token = %token_prefix,
-            server_seq,
-            "db: UPDATE sync_cursors next_seq → {}",
-            server_seq + 1
-        );
-
-        sqlx::query("UPDATE sync_cursors SET next_seq = ? WHERE sync_id = ?")
-            .bind(server_seq + 1)
-            .bind(auth_token)
-            .execute(&self.pool)
-            .await?;
-
-        let payload = base64::engine::general_purpose::STANDARD
-            .decode(&entry.encrypted_payload)
-            .map_err(|_| AppError::BadRequest("Invalid base64 in encrypted_payload".into()))?;
-
-        tracing::debug!(
-            entry_id = %entry.id,
-            server_seq,
-            payload_bytes = payload.len(),
-            "db: INSERT/UPDATE entry"
-        );
 
         sqlx::query(
             "INSERT INTO entries (id, sync_id, updated_at, is_archived, is_deleted, encrypted_payload, integrity_hash, server_seq) \
@@ -227,13 +207,15 @@ impl SyncRepository for SqliteRepository {
         .bind(&payload)
         .bind(&entry.integrity_hash)
         .bind(server_seq)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+
+        tx.commit().await?;
 
         tracing::debug!(
             entry_id = %entry.id,
             server_seq,
-            "db: entry upserted successfully"
+            "db: entry upserted"
         );
 
         Ok(UpsertResult::Accepted(server_seq))
@@ -246,7 +228,7 @@ impl SyncRepository for SqliteRepository {
         limit: i64,
     ) -> Result<Vec<DbEntry>, AppError> {
         tracing::debug!(
-            auth_token = %&auth_token[..12],
+            auth_token = %token_prefix(auth_token),
             since,
             limit,
             "db: SELECT entries WHERE server_seq > since"
@@ -263,7 +245,7 @@ impl SyncRepository for SqliteRepository {
         .await?;
 
         tracing::debug!(
-            auth_token = %&auth_token[..12],
+            auth_token = %token_prefix(auth_token),
             rows_returned = rows.len(),
             "db: entries fetched"
         );
@@ -271,19 +253,20 @@ impl SyncRepository for SqliteRepository {
         Ok(rows)
     }
 
-    async fn get_all_entries(&self, auth_token: &str) -> Result<Vec<DbEntry>, AppError> {
-        tracing::debug!(auth_token = %&auth_token[..12], "db: SELECT all entries");
+    async fn get_all_entries(&self, auth_token: &str, limit: i64) -> Result<Vec<DbEntry>, AppError> {
+        tracing::debug!(auth_token = %token_prefix(auth_token), limit, "db: SELECT all entries");
 
         let rows = sqlx::query_as(
             "SELECT id, updated_at, is_archived, is_deleted, encrypted_payload, integrity_hash, server_seq \
-             FROM entries WHERE sync_id = ? ORDER BY server_seq ASC",
+             FROM entries WHERE sync_id = ? ORDER BY server_seq ASC LIMIT ?",
         )
         .bind(auth_token)
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
         tracing::debug!(
-            auth_token = %&auth_token[..12],
+            auth_token = %token_prefix(auth_token),
             rows_returned = rows.len(),
             "db: all entries fetched"
         );
@@ -292,7 +275,7 @@ impl SyncRepository for SqliteRepository {
     }
 
     async fn get_current_seq(&self, auth_token: &str) -> Result<i64, AppError> {
-        tracing::debug!(auth_token = %&auth_token[..12], "db: SELECT current seq");
+        tracing::debug!(auth_token = %token_prefix(auth_token), "db: SELECT current seq");
 
         let seq: (i64,) =
             sqlx::query_as("SELECT next_seq - 1 FROM sync_cursors WHERE sync_id = ?")
@@ -301,7 +284,7 @@ impl SyncRepository for SqliteRepository {
                 .await?;
 
         tracing::debug!(
-            auth_token = %&auth_token[..12],
+            auth_token = %token_prefix(auth_token),
             current_seq = seq.0,
             "db: current seq fetched"
         );
@@ -310,7 +293,7 @@ impl SyncRepository for SqliteRepository {
     }
 
     async fn update_entry_count(&self, auth_token: &str) -> Result<(), AppError> {
-        tracing::debug!(auth_token = %&auth_token[..12], "db: UPDATE entry_count (recount)");
+        tracing::debug!(auth_token = %token_prefix(auth_token), "db: UPDATE entry_count (recount)");
 
         sqlx::query(
             "UPDATE accounts SET entry_count = \
@@ -322,7 +305,7 @@ impl SyncRepository for SqliteRepository {
         .execute(&self.pool)
         .await?;
 
-        tracing::debug!(auth_token = %&auth_token[..12], "db: entry_count updated");
+        tracing::debug!(auth_token = %token_prefix(auth_token), "db: entry_count updated");
 
         Ok(())
     }
@@ -339,5 +322,12 @@ impl SyncRepository for SqliteRepository {
         tracing::debug!(rows_affected = rows, "db: inactive accounts purged");
 
         Ok(rows)
+    }
+
+    async fn health_check(&self) -> Result<(), AppError> {
+        sqlx::query("SELECT 1")
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }

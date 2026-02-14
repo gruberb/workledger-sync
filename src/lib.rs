@@ -14,6 +14,7 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
+use middleware::rate_limit::RateLimiter;
 use repository::SyncRepository;
 use std::sync::Arc;
 
@@ -21,6 +22,7 @@ use std::sync::Arc;
 pub struct AppState {
     pub repo: Arc<dyn SyncRepository>,
     pub max_entries_per_account: i64,
+    pub rate_limiter: RateLimiter,
 }
 
 fn authenticated_routes() -> Router<AppState> {
@@ -47,7 +49,7 @@ fn public_routes() -> Router<AppState> {
 }
 
 fn health_routes() -> Router<AppState> {
-    Router::new().route("/health", get(|| async { "ok" }))
+    Router::new().route("/health", get(handlers::health::health_check))
 }
 
 /// Build the full application router (used by main and tests).

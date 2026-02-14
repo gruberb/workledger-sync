@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tower::ServiceExt;
 
+use workledger_sync::middleware::rate_limit::RateLimiter;
 use workledger_sync::sqlite_repo::SqliteRepository;
 use workledger_sync::{build_app, db, AppState};
 
@@ -26,6 +27,7 @@ async fn setup_app_with_limit(max_entries: i64) -> axum::Router {
     let state = AppState {
         repo,
         max_entries_per_account: max_entries,
+        rate_limiter: RateLimiter::new(1000, 1000),
     };
     build_app(state)
 }
@@ -855,4 +857,117 @@ async fn test_entry_count_updates_after_push() {
     )
     .await;
     assert_eq!(body["entryCount"], 2);
+}
+
+#[tokio::test]
+async fn test_duplicate_account_creation_returns_409() {
+    let app = setup_app().await;
+    let sync_id = generate_sync_id();
+    let auth_token = derive_auth_token(&sync_id);
+
+    let (status, _) = json_request(
+        &app,
+        "POST",
+        "/api/v1/accounts",
+        None,
+        Some(json!({ "authToken": auth_token })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Second creation with the same token should return 409
+    let (status, body) = json_request(
+        &app,
+        "POST",
+        "/api/v1/accounts",
+        None,
+        Some(json!({ "authToken": auth_token })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"].as_str().unwrap().contains("already exists"));
+}
+
+#[tokio::test]
+async fn test_push_rejects_invalid_entry() {
+    let app = setup_app().await;
+    let (auth_token, crypto_seed, salt) = create_account(&app).await;
+    let key = derive_key(&crypto_seed, &salt);
+
+    let plain = r#"{"content":"test"}"#;
+
+    // Invalid integrity hash (too short)
+    let (status, body) = json_request(
+        &app,
+        "POST",
+        "/api/v1/sync/push",
+        Some(&auth_token),
+        Some(json!({
+            "entries": [{
+                "id": "e1",
+                "updatedAt": 1000,
+                "isArchived": false,
+                "isDeleted": false,
+                "encryptedPayload": encrypt(&key, plain),
+                "integrityHash": "badhash"
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("integrityHash"));
+
+    // Invalid updatedAt (zero)
+    let (status, body) = json_request(
+        &app,
+        "POST",
+        "/api/v1/sync/push",
+        Some(&auth_token),
+        Some(json!({
+            "entries": [{
+                "id": "e1",
+                "updatedAt": 0,
+                "isArchived": false,
+                "isDeleted": false,
+                "encryptedPayload": encrypt(&key, plain),
+                "integrityHash": integrity_hash(plain)
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("updatedAt"));
+}
+
+#[tokio::test]
+async fn test_full_sync_entry_limit() {
+    let app = setup_app_with_limit(2).await;
+    let (auth_token, crypto_seed, salt) = create_account(&app).await;
+    let key = derive_key(&crypto_seed, &salt);
+
+    // Full sync with 3 entries when limit is 2 should fail
+    let entries: Vec<serde_json::Value> = (1..=3)
+        .map(|i| {
+            let plain = format!(r#"{{"content":"entry {}"}}"#, i);
+            json!({
+                "id": format!("e{}", i),
+                "updatedAt": i * 1000,
+                "isArchived": false,
+                "isDeleted": false,
+                "encryptedPayload": encrypt(&key, &plain),
+                "integrityHash": integrity_hash(&plain)
+            })
+        })
+        .collect();
+
+    let (status, body) = json_request(
+        &app,
+        "POST",
+        "/api/v1/sync/full",
+        Some(&auth_token),
+        Some(json!({ "entries": entries })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(body["error"].as_str().unwrap().contains("limit"));
 }
