@@ -25,10 +25,6 @@ RUN mkdir -p /data
 WORKDIR /app
 COPY --from=builder /app/target/release/workledger-sync /usr/local/bin
 
-RUN useradd -r -s /bin/false appuser && chown appuser:appuser /data
-
-USER appuser
-
 ENV DATABASE_URL=sqlite:/data/workledger-sync.db
 
 EXPOSE 8080
