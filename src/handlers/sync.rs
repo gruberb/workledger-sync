@@ -122,6 +122,10 @@ pub async fn pull(
         "Handler: GET /api/v1/sync/pull"
     );
 
+    if !state.repo.account_exists(&auth_token).await? {
+        return Err(AppError::NotFound("Account not found".into()));
+    }
+
     // Fetch one extra to determine hasMore
     tracing::debug!(handler = "pull", fetch_limit = limit + 1, "Dispatching to repo.get_entries_since");
     let rows = state
