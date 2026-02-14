@@ -105,7 +105,7 @@ decrypt(blobs, AES key)
 | `POST` | `/api/v1/sync/full` | `X-Auth-Token` | Full sync (merge + return all) |
 | `GET` | `/health` | - | Health check |
 
-See [`openapi.yaml`](openapi.yaml) for the full specification.
+See the [interactive API docs](https://gruberb.github.io/workledger-sync/) or [`openapi.yaml`](openapi.yaml) for the full specification.
 
 ## Getting Started
 
