@@ -170,6 +170,13 @@ impl SyncRepository for SqliteRepository {
         .await?;
 
         if let Some(existing) = &existing {
+            tracing::debug!(
+                entry_id = %entry.id,
+                server_updated_at = existing.updated_at,
+                client_updated_at = entry.updated_at,
+                client_is_deleted = entry.is_deleted,
+                "db: LWW comparison"
+            );
             if existing.updated_at >= entry.updated_at {
                 // tx drops here → implicit rollback
                 return Ok(UpsertResult::Conflict(ConflictEntry {
