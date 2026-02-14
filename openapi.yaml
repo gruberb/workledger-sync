@@ -2,66 +2,11 @@ openapi: 3.1.0
 info:
   title: WorkLedger Sync API
   description: |
-    Zero-knowledge encrypted sync server for WorkLedger notes.
+    Zero-knowledge encrypted sync server for WorkLedger notes. All entries are encrypted client-side (AES-256-GCM) — the server only stores opaque blobs.
 
-    ## Authentication
+    **Authentication:** All endpoints except `POST /accounts` require an `X-Auth-Token` header containing a 64-character hex string (a SHA-256 hash derived client-side).
 
-    All endpoints except `POST /accounts` require an `X-Auth-Token` header.
-    This token is derived client-side and the server never sees the raw sync ID.
-
-    ## Split-Key Design
-
-    The user generates a random sync ID locally (e.g. `wl-` + 32 hex chars).
-    Two values are derived from it — one for authentication, one for encryption:
-
-    ```
-    syncId     = "wl-<32 random hex chars>"           // user's secret, never sent to server
-    authToken  = SHA-256("auth:"   + syncId)           // hex-encoded, sent in X-Auth-Token header
-    cryptoSeed = SHA-256("crypto:" + syncId)           // used for key derivation, never leaves client
-    ```
-
-    ### Account Creation Flow
-
-    1. Client generates `syncId` locally
-    2. Client computes `authToken = hex(SHA-256("auth:" + syncId))`
-    3. Client sends `POST /accounts` with `{ "authToken": "<64 hex chars>" }`
-    4. Server stores the auth token and returns a random salt
-    5. Client computes `cryptoSeed = SHA-256("crypto:" + syncId)`
-    6. Client derives AES key: `PBKDF2(cryptoSeed, salt, 100000, SHA-256) → 256-bit key`
-
-    ### Multi-Device Flow
-
-    1. User enters `syncId` on new device
-    2. Client computes `authToken` from it
-    3. Client calls `GET /accounts/validate` with `X-Auth-Token` header
-    4. Server returns salt
-    5. Client derives the same `cryptoSeed` → same AES key → can decrypt entries
-
-    ### Why Zero-Knowledge
-
-    The server only ever sees the `authToken` (a SHA-256 hash). It never sees the
-    `syncId` or `cryptoSeed`. Even if the server logs every request header, it cannot
-    derive the encryption key because `authToken` and `cryptoSeed` are independent
-    derivations from the `syncId`.
-
-    ## Encryption
-
-    - Algorithm: AES-256-GCM
-    - Key derivation: PBKDF2-HMAC-SHA256, 100,000 iterations
-    - IV: 12 random bytes, prepended to ciphertext
-    - Payload format: `base64(IV || ciphertext || GCM tag)`
-    - Integrity hash: `hex(SHA-256(plaintext))` with canonical JSON (sorted keys)
-
-    ## Sync Protocol
-
-    - **Push**: Client encrypts entries and sends to server. Server uses Last-Write-Wins
-      (LWW) based on `updatedAt` timestamps. Server wins ties.
-    - **Pull**: Client requests entries changed since a given `server_seq`. Supports
-      pagination via `limit` and `hasMore`.
-    - **Full sync**: Initial sync that sends all client entries and receives all server
-      entries (merged via LWW).
-    - **Conflict resolution**: If the server has a newer version (by `updatedAt`), the
-      push is rejected for that entry and returned in the `conflicts` array.
+    **Sync protocol:** Push/pull use Last-Write-Wins (LWW) based on `updatedAt` timestamps. Server wins ties. Pull supports pagination via `since` and `limit`.
 
   version: 1.0.0
   license:
@@ -80,8 +25,8 @@ components:
       in: header
       name: X-Auth-Token
       description: |
-        SHA-256("auth:" + syncId), hex-encoded (64 characters).
-        Derived client-side from the user's sync ID.
+        Paste the auth token (64 hex characters). This is the value the client
+        computes as hex(SHA-256("auth:" + syncId)) — paste the hash, not the sync ID.
 
   schemas:
     SyncEntry:
