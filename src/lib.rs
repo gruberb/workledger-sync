@@ -52,11 +52,20 @@ fn health_routes() -> Router<AppState> {
     Router::new().route("/health", get(handlers::health::health_check))
 }
 
+fn admin_routes() -> Router<AppState> {
+    Router::new()
+        .route("/admin/metrics", get(handlers::admin::get_metrics))
+        .layer(axum_middleware::from_fn(
+            middleware::admin_auth::require_admin_token,
+        ))
+}
+
 /// Build the full application router (used by main and tests).
 pub fn build_app(state: AppState) -> Router {
     Router::new()
         .merge(authenticated_routes())
         .merge(public_routes())
         .merge(health_routes())
+        .merge(admin_routes())
         .with_state(state)
 }

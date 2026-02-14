@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use crate::error::AppError;
 use crate::models::account::AccountInfo;
 use crate::models::entry::{DbEntry, SyncEntry};
+use crate::models::metrics::Metrics;
 use crate::models::sync::ConflictEntry;
 
 pub enum UpsertResult {
@@ -34,4 +35,5 @@ pub trait SyncRepository: Send + Sync {
     async fn update_entry_count(&self, auth_token: &str) -> Result<(), AppError>;
     async fn purge_inactive_accounts(&self, cutoff: i64) -> Result<u64, AppError>;
     async fn health_check(&self) -> Result<(), AppError>;
+    async fn get_metrics(&self) -> Result<Metrics, AppError>;
 }

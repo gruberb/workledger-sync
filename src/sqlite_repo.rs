@@ -5,6 +5,7 @@ use sqlx::SqlitePool;
 use crate::error::AppError;
 use crate::models::account::AccountInfo;
 use crate::models::entry::{DbEntry, SyncEntry};
+use crate::models::metrics::{AccountMetrics, EntryMetrics, Metrics, StorageMetrics};
 use crate::models::sync::ConflictEntry;
 use crate::repository::{SyncRepository, UpsertResult};
 use crate::util::{now_millis, token_prefix};
@@ -336,5 +337,70 @@ impl SyncRepository for SqliteRepository {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    async fn get_metrics(&self) -> Result<Metrics, AppError> {
+        tracing::debug!("db: collecting metrics");
+
+        let now = now_millis();
+        let day_ms: i64 = 86_400_000;
+
+        let account_row: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+                COUNT(*), \
+                COALESCE(SUM(CASE WHEN last_seen_at >= ? THEN 1 ELSE 0 END), 0), \
+                COALESCE(SUM(CASE WHEN last_seen_at >= ? THEN 1 ELSE 0 END), 0), \
+                COALESCE(SUM(CASE WHEN last_seen_at >= ? THEN 1 ELSE 0 END), 0) \
+             FROM accounts",
+        )
+        .bind(now - day_ms)
+        .bind(now - 7 * day_ms)
+        .bind(now - 30 * day_ms)
+        .fetch_one(&self.pool)
+        .await?;
+
+        let entry_row: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT \
+                COUNT(*), \
+                COALESCE(SUM(CASE WHEN is_deleted = 0 AND is_archived = 0 THEN 1 ELSE 0 END), 0), \
+                COALESCE(SUM(CASE WHEN is_archived = 1 AND is_deleted = 0 THEN 1 ELSE 0 END), 0), \
+                COALESCE(SUM(CASE WHEN is_deleted = 1 THEN 1 ELSE 0 END), 0) \
+             FROM entries",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let storage_row: (i64,) = sqlx::query_as(
+            "SELECT COALESCE(SUM(LENGTH(encrypted_payload)), 0) FROM entries",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        let metrics = Metrics {
+            accounts: AccountMetrics {
+                total: account_row.0,
+                active_last_24h: account_row.1,
+                active_last_7d: account_row.2,
+                active_last_30d: account_row.3,
+            },
+            entries: EntryMetrics {
+                total: entry_row.0,
+                active: entry_row.1,
+                archived: entry_row.2,
+                deleted: entry_row.3,
+            },
+            storage: StorageMetrics {
+                total_payload_bytes: storage_row.0,
+            },
+            collected_at: now,
+        };
+
+        tracing::debug!(
+            total_accounts = metrics.accounts.total,
+            total_entries = metrics.entries.total,
+            "db: metrics collected"
+        );
+
+        Ok(metrics)
     }
 }
