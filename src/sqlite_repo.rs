@@ -282,6 +282,87 @@ impl SyncRepository for SqliteRepository {
         Ok(rows)
     }
 
+    async fn get_entries_since_with_seq(
+        &self,
+        auth_token: &str,
+        since: i64,
+        limit: i64,
+    ) -> Result<(Vec<DbEntry>, i64), AppError> {
+        let token_prefix = token_prefix(auth_token);
+        tracing::debug!(
+            auth_token = %token_prefix,
+            since,
+            limit,
+            "db: transactional SELECT entries + seq"
+        );
+
+        let mut tx = self.pool.begin().await?;
+
+        let rows: Vec<DbEntry> = sqlx::query_as(
+            "SELECT id, updated_at, is_archived, is_deleted, encrypted_payload, integrity_hash, server_seq \
+             FROM entries WHERE sync_id = ? AND server_seq > ? ORDER BY server_seq ASC LIMIT ?",
+        )
+        .bind(auth_token)
+        .bind(since)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let seq: (i64,) =
+            sqlx::query_as("SELECT next_seq - 1 FROM sync_cursors WHERE sync_id = ?")
+                .bind(auth_token)
+                .fetch_one(&mut *tx)
+                .await?;
+
+        tx.commit().await?;
+
+        tracing::debug!(
+            auth_token = %token_prefix,
+            rows_returned = rows.len(),
+            current_seq = seq.0,
+            "db: transactional entries + seq fetched"
+        );
+
+        Ok((rows, seq.0))
+    }
+
+    async fn get_all_entries_with_seq(
+        &self,
+        auth_token: &str,
+        limit: i64,
+    ) -> Result<(Vec<DbEntry>, i64), AppError> {
+        let token_prefix = token_prefix(auth_token);
+        tracing::debug!(auth_token = %token_prefix, limit, "db: transactional SELECT all entries + seq");
+
+        let mut tx = self.pool.begin().await?;
+
+        let rows: Vec<DbEntry> = sqlx::query_as(
+            "SELECT id, updated_at, is_archived, is_deleted, encrypted_payload, integrity_hash, server_seq \
+             FROM entries WHERE sync_id = ? ORDER BY server_seq ASC LIMIT ?",
+        )
+        .bind(auth_token)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await?;
+
+        let seq: (i64,) =
+            sqlx::query_as("SELECT next_seq - 1 FROM sync_cursors WHERE sync_id = ?")
+                .bind(auth_token)
+                .fetch_one(&mut *tx)
+                .await?;
+
+        tx.commit().await?;
+
+        tracing::debug!(
+            auth_token = %token_prefix,
+            rows_returned = rows.len(),
+            current_seq = seq.0,
+            "db: transactional all entries + seq fetched"
+        );
+
+        Ok((rows, seq.0))
+    }
+
     async fn get_current_seq(&self, auth_token: &str) -> Result<i64, AppError> {
         tracing::debug!(auth_token = %token_prefix(auth_token), "db: SELECT current seq");
 

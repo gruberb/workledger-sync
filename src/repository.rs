@@ -31,6 +31,17 @@ pub trait SyncRepository: Send + Sync {
         limit: i64,
     ) -> Result<Vec<DbEntry>, AppError>;
     async fn get_all_entries(&self, auth_token: &str, limit: i64) -> Result<Vec<DbEntry>, AppError>;
+    async fn get_entries_since_with_seq(
+        &self,
+        auth_token: &str,
+        since: i64,
+        limit: i64,
+    ) -> Result<(Vec<DbEntry>, i64), AppError>;
+    async fn get_all_entries_with_seq(
+        &self,
+        auth_token: &str,
+        limit: i64,
+    ) -> Result<(Vec<DbEntry>, i64), AppError>;
     async fn get_current_seq(&self, auth_token: &str) -> Result<i64, AppError>;
     async fn update_entry_count(&self, auth_token: &str) -> Result<(), AppError>;
     async fn purge_inactive_accounts(&self, cutoff: i64) -> Result<u64, AppError>;

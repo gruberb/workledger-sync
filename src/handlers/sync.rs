@@ -53,6 +53,7 @@ pub async fn push(
 
     let mut accepted = 0usize;
     let mut conflicts = Vec::new();
+    let mut max_seq: i64 = 0;
 
     for (i, entry) in body.entries.iter().enumerate() {
         tracing::debug!(
@@ -70,6 +71,7 @@ pub async fn push(
                     "Repo returned: entry accepted"
                 );
                 accepted += 1;
+                max_seq = max_seq.max(seq);
             }
             UpsertResult::Conflict(conflict) => {
                 tracing::debug!(
@@ -78,6 +80,7 @@ pub async fn push(
                     server_updated_at = conflict.server_updated_at,
                     "Repo returned: entry conflict"
                 );
+                max_seq = max_seq.max(conflict.server_seq);
                 conflicts.push(conflict);
             }
         }
@@ -92,8 +95,13 @@ pub async fn push(
         }
     }
 
-    tracing::debug!(handler = "push", "Dispatching to repo.get_current_seq");
-    let current_seq = state.repo.get_current_seq(&auth_token).await?;
+    // Derive serverSeq from upsert results; fall back to DB only for empty pushes
+    let current_seq = if max_seq > 0 {
+        max_seq
+    } else {
+        tracing::debug!(handler = "push", "Empty push, dispatching to repo.get_current_seq");
+        state.repo.get_current_seq(&auth_token).await?
+    };
 
     tracing::info!(
         handler = "push",
@@ -133,13 +141,13 @@ pub async fn pull(
         return Err(AppError::NotFound("Account not found".into()));
     }
 
-    // Fetch one extra to determine hasMore
-    tracing::debug!(handler = "pull", fetch_limit = limit + 1, "Dispatching to repo.get_entries_since");
-    let rows = state
+    // Fetch one extra to determine hasMore, atomically with seq
+    tracing::debug!(handler = "pull", fetch_limit = limit + 1, "Dispatching to repo.get_entries_since_with_seq");
+    let (rows, current_seq) = state
         .repo
-        .get_entries_since(&auth_token, since, limit + 1)
+        .get_entries_since_with_seq(&auth_token, since, limit + 1)
         .await?;
-    tracing::debug!(handler = "pull", rows_fetched = rows.len(), "Repo returned");
+    tracing::debug!(handler = "pull", rows_fetched = rows.len(), current_seq, "Repo returned");
 
     let has_more = rows.len() as i64 > limit;
     let entries: Vec<SyncEntry> = rows
@@ -147,9 +155,6 @@ pub async fn pull(
         .take(limit as usize)
         .map(|r| r.to_sync_entry())
         .collect();
-
-    tracing::debug!(handler = "pull", "Dispatching to repo.get_current_seq");
-    let current_seq = state.repo.get_current_seq(&auth_token).await?;
 
     tracing::debug!(handler = "pull", "Dispatching to repo.update_last_seen");
     if let Err(e) = state.repo.update_last_seen(&auth_token).await {
@@ -222,13 +227,10 @@ pub async fn full_sync(
         }
     }
 
-    tracing::debug!(handler = "full_sync", "Dispatching to repo.get_all_entries");
-    let all_rows = state.repo.get_all_entries(&auth_token, state.max_entries_per_account).await?;
+    tracing::debug!(handler = "full_sync", "Dispatching to repo.get_all_entries_with_seq");
+    let (all_rows, current_seq) = state.repo.get_all_entries_with_seq(&auth_token, state.max_entries_per_account).await?;
     let entries: Vec<SyncEntry> = all_rows.iter().map(|r| r.to_sync_entry()).collect();
-    tracing::debug!(handler = "full_sync", total_entries = entries.len(), "Repo returned: all entries");
-
-    tracing::debug!(handler = "full_sync", "Dispatching to repo.get_current_seq");
-    let current_seq = state.repo.get_current_seq(&auth_token).await?;
+    tracing::debug!(handler = "full_sync", total_entries = entries.len(), current_seq, "Repo returned: all entries + seq");
 
     tracing::debug!(handler = "full_sync", "Dispatching to repo.update_entry_count");
     state.repo.update_entry_count(&auth_token).await?;
