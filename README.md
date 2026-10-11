@@ -26,7 +26,7 @@ A privacy-first sync server for [WorkLedger](https://workledger.app) notes. The 
 - **Server never sees plaintext** — entries are opaque encrypted blobs to the server
 - **Last-Write-Wins conflict resolution** — deterministic sync with server-wins tie-breaking
 - **Paginated incremental sync** — efficient pull with sequence-based pagination
-- **Full sync support** — first-device onboarding merges all entries in one call
+- **Batched sync**: clients reconcile with paginated pulls and batched pushes; per-entry and per-request size limits answer with 413 so oversized entries can be skipped
 - **Built with Rust** — Axum web framework + SQLite via sqlx
 
 ## How It Works
@@ -102,7 +102,7 @@ decrypt(blobs, AES key)
 | `DELETE` | `/api/v1/accounts` | `X-Auth-Token` | Delete account + all entries |
 | `POST` | `/api/v1/sync/push` | `X-Auth-Token` | Push encrypted entries (LWW) |
 | `GET` | `/api/v1/sync/pull` | `X-Auth-Token` | Pull entries since sequence N |
-| `POST` | `/api/v1/sync/full` | `X-Auth-Token` | Full sync (merge + return all) |
+| `POST` | `/api/v1/sync/full` | `X-Auth-Token` | Full sync (merge + return all). Deprecated, kept for clients before 3.3.0 |
 | `GET` | `/health` | - | Health check |
 
 See the [interactive API docs](https://gruberb.github.io/workledger-sync/) or [`openapi.yaml`](openapi.yaml) for the full specification.
@@ -141,7 +141,7 @@ All configuration is via environment variables:
 | `PORT` | `3000` | Server port |
 | `DATABASE_URL` | `sqlite:workledger-sync.db` | SQLite database path |
 | `CORS_ORIGINS` | `https://workledger.app,http://localhost:5173` | Comma-separated allowed origins |
-| `MAX_ENTRIES` | `10000` | Max entries per account |
+| `MAX_ENTRIES` | `10000` | Max live entries per account (updates and deletes don't count toward it) |
 | `MAX_PAYLOAD_BYTES` | `1048576` | Max request payload (1 MB) |
 | `CLEANUP_INACTIVE_DAYS` | `90` | Days before inactive account cleanup |
 
@@ -151,8 +151,13 @@ All configuration is via environment variables:
 
 - `authToken` — a SHA-256 hash (used for authentication lookups)
 - `salt` — random 16 bytes (returned to client for key derivation)
-- Encrypted payloads — opaque base64 blobs
+- Encrypted payloads: opaque base64 blobs (max 700,000 chars each)
+- Integrity hashes: opaque 64-hex values; clients from 3.3.0 hash the ciphertext, older clients hashed the plaintext
 - Metadata — timestamps, archived/deleted flags, sequence numbers
+
+### Payload format
+
+The payload format is defined by the client and never inspected by the server. Clients from WorkLedger 3.3.0 write format v2: the entry id is bound to the ciphertext as AES-GCM additional data, so the server cannot serve one entry's payload under another id, and tombstones are encrypted so a deletion is authenticated. These clients still read v1 payloads. Clients before 3.3.0 cannot read v2 payloads, and empty v1 tombstones are still accepted for compatibility, so the server can still forge a deletion of an entry.
 
 ### What the server cannot derive
 

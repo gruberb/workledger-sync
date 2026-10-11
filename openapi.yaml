@@ -54,15 +54,30 @@ components:
           example: false
         isDeleted:
           type: boolean
-          description: Whether the entry is soft-deleted
+          description: |
+            Whether the entry is soft-deleted (a tombstone). Tombstones from clients
+            before 3.3.0 have an empty `encryptedPayload` and `integrityHash`; newer
+            clients send an encrypted tombstone so the deletion is authenticated.
           example: false
         encryptedPayload:
           type: string
-          description: Base64-encoded AES-256-GCM ciphertext (12-byte IV prepended)
+          maxLength: 700000
+          description: |
+            Base64-encoded AES-256-GCM ciphertext (12-byte IV prepended). Opaque to
+            the server. Required for live entries, optional for tombstones.
+
+            Payload format is a client concern and the server never inspects it.
+            Clients from 3.3.0 write format v2 (entry id bound as AES-GCM
+            additional data, `id` and `isDeleted` inside the ciphertext) and still
+            read v1. Clients before 3.3.0 cannot read v2 payloads.
           example: "dGVzdCBwYXlsb2Fk..."
         integrityHash:
           type: string
-          description: Hex-encoded SHA-256 hash of the plaintext (for client-side verification)
+          description: |
+            64 hex chars, required for live entries. Opaque to the server, which
+            only checks the format. Clients from 3.3.0 send SHA-256 of the
+            ciphertext; older clients sent SHA-256 of the plaintext, which leaked
+            content equality and was dropped.
           example: "e3b0c44298fc1c14..."
         serverSeq:
           type: integer
@@ -327,6 +342,13 @@ paths:
 
         The response tells the client which entries were accepted and which conflicted.
         Conflicts include the server's `updatedAt` so the client can resolve.
+
+        The batch is all-or-nothing: every entry is validated before any is written.
+        Only entries that would become new live rows count toward the entry limit;
+        updates and deletes of existing entries never do.
+
+        Request bodies are limited to `MAX_PAYLOAD_BYTES` (default 1 MB), so
+        clients push in batches.
       tags: [Sync]
       security:
         - AuthToken: []
@@ -343,10 +365,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/PushResponse"
+        "400":
+          description: An entry is malformed, or the batch would exceed the entry limit
         "401":
           description: Missing X-Auth-Token header
         "404":
           description: Account not found
+        "413":
+          description: |
+            The request body exceeds `MAX_PAYLOAD_BYTES`, or an entry's
+            `encryptedPayload` exceeds 700,000 chars. Clients should split the
+            batch; an entry that is too large on its own can never be accepted
+            and should be skipped rather than retried.
 
   /api/v1/sync/pull:
     get:
@@ -391,7 +421,12 @@ paths:
     post:
       operationId: fullSync
       summary: Initial full sync (merge all entries)
+      deprecated: true
       description: |
+        Deprecated: kept for clients before 3.3.0. Newer clients reconcile with a
+        paginated pull followed by batched pushes, because one request carrying
+        every entry exceeds the request body limit for large notebooks.
+
         Used for the first sync on a new device. The client sends all its local
         entries, and the server merges them with existing entries using LWW.
 
@@ -420,6 +455,8 @@ paths:
           description: Missing X-Auth-Token header
         "404":
           description: Account not found
+        "413":
+          description: Request body or an entry's `encryptedPayload` is too large
 
   /health:
     get:
