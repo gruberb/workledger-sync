@@ -44,6 +44,8 @@ pub trait SyncRepository: Send + Sync {
     ) -> Result<(Vec<DbEntry>, i64), AppError>;
     async fn get_current_seq(&self, auth_token: &str) -> Result<i64, AppError>;
     async fn update_entry_count(&self, auth_token: &str) -> Result<(), AppError>;
+    /// How many of `ids` are stored and not deleted for this account.
+    async fn count_live_entries(&self, auth_token: &str, ids: &[&str]) -> Result<i64, AppError>;
     async fn purge_inactive_accounts(&self, cutoff: i64) -> Result<u64, AppError>;
     async fn health_check(&self) -> Result<(), AppError>;
     async fn get_metrics(&self) -> Result<Metrics, AppError>;

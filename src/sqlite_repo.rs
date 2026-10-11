@@ -399,6 +399,24 @@ impl SyncRepository for SqliteRepository {
         Ok(())
     }
 
+    async fn count_live_entries(&self, auth_token: &str, ids: &[&str]) -> Result<i64, AppError> {
+        if ids.is_empty() {
+            return Ok(0);
+        }
+        // json_each binds the whole id list as one parameter, so batch size
+        // never runs into SQLite's host-parameter limit.
+        let ids_json = serde_json::to_string(ids).expect("a list of strings always serializes");
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM entries \
+             WHERE sync_id = ? AND is_deleted = 0 AND id IN (SELECT value FROM json_each(?))",
+        )
+        .bind(auth_token)
+        .bind(ids_json)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count)
+    }
+
     async fn purge_inactive_accounts(&self, cutoff: i64) -> Result<u64, AppError> {
         tracing::debug!(cutoff, "db: DELETE inactive accounts");
 

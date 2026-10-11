@@ -1,7 +1,16 @@
 use serde::{Deserialize, Serialize};
 
 const MAX_ENTRY_ID_LEN: usize = 256;
-const MAX_ENCRYPTED_PAYLOAD_LEN: usize = 700_000;
+pub const MAX_ENCRYPTED_PAYLOAD_LEN: usize = 700_000;
+
+/// Why an entry was rejected. Size is separate because clients treat it
+/// differently: a malformed entry is a bug, an oversized one can never be
+/// accepted and should be skipped instead of retried.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EntryValidationError {
+    Invalid(String),
+    TooLarge { len: usize },
+}
 
 /// Entry as sent/received over the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,37 +27,31 @@ pub struct SyncEntry {
 }
 
 impl SyncEntry {
-    pub fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), EntryValidationError> {
+        use EntryValidationError::{Invalid, TooLarge};
+
         if self.id.is_empty() || self.id.len() > MAX_ENTRY_ID_LEN {
-            return Err(format!(
+            return Err(Invalid(format!(
                 "id length must be 1-{MAX_ENTRY_ID_LEN}, got {}",
                 self.id.len()
-            ));
+            )));
         }
         if self.updated_at <= 0 {
-            return Err("updatedAt must be positive".into());
+            return Err(Invalid("updatedAt must be positive".into()));
         }
-        if self.is_deleted {
-            // Deleted entries may have empty payload and hash
-            if self.encrypted_payload.len() > MAX_ENCRYPTED_PAYLOAD_LEN {
-                return Err(format!(
-                    "encryptedPayload length must be 0-{MAX_ENCRYPTED_PAYLOAD_LEN}, got {}",
-                    self.encrypted_payload.len()
-                ));
-            }
-        } else {
-            if self.encrypted_payload.is_empty()
-                || self.encrypted_payload.len() > MAX_ENCRYPTED_PAYLOAD_LEN
-            {
-                return Err(format!(
-                    "encryptedPayload length must be 1-{MAX_ENCRYPTED_PAYLOAD_LEN}, got {}",
-                    self.encrypted_payload.len()
-                ));
+        if self.encrypted_payload.len() > MAX_ENCRYPTED_PAYLOAD_LEN {
+            return Err(TooLarge { len: self.encrypted_payload.len() });
+        }
+        // Deleted entries may have an empty payload and hash (clients before
+        // 3.3.0 send empty tombstones; newer clients send encrypted ones).
+        if !self.is_deleted {
+            if self.encrypted_payload.is_empty() {
+                return Err(Invalid("encryptedPayload must not be empty".into()));
             }
             if self.integrity_hash.len() != 64
                 || !self.integrity_hash.chars().all(|c| c.is_ascii_hexdigit())
             {
-                return Err("integrityHash must be exactly 64 hex chars".into());
+                return Err(Invalid("integrityHash must be exactly 64 hex chars".into()));
             }
         }
         Ok(())

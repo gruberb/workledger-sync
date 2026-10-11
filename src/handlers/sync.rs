@@ -7,12 +7,60 @@ use axum::{
 use crate::error::AppError;
 use crate::middleware::auth::AuthToken;
 use crate::util::token_prefix;
-use crate::models::entry::SyncEntry;
+use crate::models::account::AccountInfo;
+use crate::models::entry::{EntryValidationError, SyncEntry, MAX_ENCRYPTED_PAYLOAD_LEN};
 use crate::models::sync::{
     FullSyncRequest, FullSyncResponse, PullQuery, PullResponse, PushRequest, PushResponse,
 };
 use crate::repository::UpsertResult;
 use crate::AppState;
+
+/// Validates every entry before any is written, so a batch is all-or-nothing.
+fn validate_entries(entries: &[SyncEntry]) -> Result<(), AppError> {
+    for entry in entries {
+        match entry.validate() {
+            Ok(()) => {}
+            Err(EntryValidationError::TooLarge { len }) => {
+                return Err(AppError::PayloadTooLarge(format!(
+                    "Entry '{}' encryptedPayload is {len} chars, limit is {MAX_ENCRYPTED_PAYLOAD_LEN}",
+                    entry.id
+                )));
+            }
+            Err(EntryValidationError::Invalid(msg)) => {
+                return Err(AppError::BadRequest(format!("Invalid entry '{}': {msg}", entry.id)));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Rejects the batch if it would push the account over its entry limit.
+///
+/// Only entries that would become new live rows count. Updates and deletes of
+/// existing entries don't grow the account, and counting them made every
+/// batched re-push fail once an account was within one batch of the limit.
+async fn check_entry_limit(
+    state: &AppState,
+    auth_token: &str,
+    account: &AccountInfo,
+    entries: &[SyncEntry],
+) -> Result<(), AppError> {
+    let mut live_ids: Vec<&str> = entries
+        .iter()
+        .filter(|e| !e.is_deleted)
+        .map(|e| e.id.as_str())
+        .collect();
+    live_ids.sort_unstable();
+    live_ids.dedup();
+
+    let already_live = state.repo.count_live_entries(auth_token, &live_ids).await?;
+    let new_live = live_ids.len() as i64 - already_live;
+    if account.entry_count + new_live > state.max_entries_per_account {
+        tracing::warn!(new_live, current = account.entry_count, "Entry limit exceeded");
+        return Err(AppError::BadRequest("Entry limit exceeded".into()));
+    }
+    Ok(())
+}
 
 /// POST /api/v1/sync/push
 pub async fn push(
@@ -40,16 +88,8 @@ pub async fn push(
         "Repo returned: account found"
     );
 
-    if account.entry_count + body.entries.len() as i64 > state.max_entries_per_account {
-        tracing::warn!(handler = "push", "Entry limit exceeded");
-        return Err(AppError::BadRequest("Entry limit exceeded".into()));
-    }
-
-    for entry in &body.entries {
-        if let Err(msg) = entry.validate() {
-            return Err(AppError::BadRequest(format!("Invalid entry '{}': {msg}", entry.id)));
-        }
-    }
+    validate_entries(&body.entries)?;
+    check_entry_limit(&state, &auth_token, &account, &body.entries).await?;
 
     let mut accepted = 0usize;
     let mut conflicts = Vec::new();
@@ -178,7 +218,11 @@ pub async fn pull(
     }))
 }
 
-/// POST /api/v1/sync/full — initial full sync
+/// POST /api/v1/sync/full: initial full sync.
+///
+/// Kept for clients before 3.3.0. Newer clients reconcile with a paginated
+/// pull plus batched pushes, because one request with every entry exceeds the
+/// request body limit for large notebooks.
 pub async fn full_sync(
     State(state): State<AppState>,
     Extension(AuthToken(auth_token)): Extension<AuthToken>,
@@ -197,15 +241,8 @@ pub async fn full_sync(
         .await?
         .ok_or_else(|| AppError::NotFound("Account not found".into()))?;
 
-    if account.entry_count + body.entries.len() as i64 > state.max_entries_per_account {
-        return Err(AppError::BadRequest("Entry limit exceeded".into()));
-    }
-
-    for entry in &body.entries {
-        if let Err(msg) = entry.validate() {
-            return Err(AppError::BadRequest(format!("Invalid entry '{}': {msg}", entry.id)));
-        }
-    }
+    validate_entries(&body.entries)?;
+    check_entry_limit(&state, &auth_token, &account, &body.entries).await?;
 
     let mut merged = 0usize;
 

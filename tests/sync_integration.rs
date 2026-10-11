@@ -971,3 +971,141 @@ async fn test_full_sync_entry_limit() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["error"].as_str().unwrap().contains("limit"));
 }
+
+fn live_entry(key: &[u8], id: &str, updated_at: i64, content: &str) -> serde_json::Value {
+    let plain = format!(r#"{{"content":"{content}"}}"#);
+    json!({
+        "id": id,
+        "updatedAt": updated_at,
+        "isArchived": false,
+        "isDeleted": false,
+        "encryptedPayload": encrypt(key, &plain),
+        "integrityHash": integrity_hash(&plain)
+    })
+}
+
+#[tokio::test]
+async fn test_entry_limit_counts_only_new_live_entries() {
+    let app = setup_app_with_limit(2).await;
+    let (auth_token, crypto_seed, salt) = create_account(&app).await;
+    let key = derive_key(&crypto_seed, &salt);
+
+    let (status, _) = json_request(
+        &app,
+        "POST",
+        "/api/v1/sync/push",
+        Some(&auth_token),
+        Some(json!({ "entries": [live_entry(&key, "e1", 1000, "a"), live_entry(&key, "e2", 1000, "b")] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // At the limit: re-pushing existing entries (a batched full re-push) is not growth.
+    let (status, body) = json_request(
+        &app,
+        "POST",
+        "/api/v1/sync/push",
+        Some(&auth_token),
+        Some(json!({ "entries": [live_entry(&key, "e1", 2000, "a2"), live_entry(&key, "e2", 2000, "b2")] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["accepted"], 2);
+
+    // Tombstones never count, whether or not the id exists on the server.
+    let (status, body) = json_request(
+        &app,
+        "POST",
+        "/api/v1/sync/push",
+        Some(&auth_token),
+        Some(json!({ "entries": [
+            { "id": "e1", "updatedAt": 3000, "isArchived": false, "isDeleted": true, "encryptedPayload": "", "integrityHash": "" },
+            { "id": "never-synced", "updatedAt": 3000, "isArchived": false, "isDeleted": true, "encryptedPayload": "", "integrityHash": "" }
+        ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // e1 is deleted now, so one new entry fits again; two do not.
+    let (status, _) = json_request(
+        &app,
+        "POST",
+        "/api/v1/sync/push",
+        Some(&auth_token),
+        Some(json!({ "entries": [live_entry(&key, "e3", 4000, "c"), live_entry(&key, "e4", 4000, "d")] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, _) = json_request(
+        &app,
+        "POST",
+        "/api/v1/sync/push",
+        Some(&auth_token),
+        Some(json!({ "entries": [live_entry(&key, "e3", 4000, "c")] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_oversized_entry_returns_413() {
+    let app = setup_app().await;
+    let (auth_token, crypto_seed, salt) = create_account(&app).await;
+    let key = derive_key(&crypto_seed, &salt);
+
+    let oversized = json!({
+        "id": "huge",
+        "updatedAt": 1000,
+        "isArchived": false,
+        "isDeleted": false,
+        "encryptedPayload": "A".repeat(700_004),
+        "integrityHash": "0".repeat(64)
+    });
+    let (status, body) = json_request(
+        &app,
+        "POST",
+        "/api/v1/sync/push",
+        Some(&auth_token),
+        Some(json!({ "entries": [live_entry(&key, "small", 1000, "ok"), oversized] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(body["error"].as_str().unwrap().contains("huge"));
+
+    // The batch is all-or-nothing: the valid entry was not written either.
+    let (status, body) = json_request(&app, "GET", "/api/v1/sync/pull?since=0", Some(&auth_token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["entries"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_encrypted_tombstone_accepted() {
+    let app = setup_app().await;
+    let (auth_token, crypto_seed, salt) = create_account(&app).await;
+    let key = derive_key(&crypto_seed, &salt);
+
+    // Clients from 3.3.0 encrypt tombstones; the hash is opaque to the server.
+    let marker = r#"{"v":2,"id":"e1","isDeleted":true}"#;
+    let (status, body) = json_request(
+        &app,
+        "POST",
+        "/api/v1/sync/push",
+        Some(&auth_token),
+        Some(json!({ "entries": [{
+            "id": "e1",
+            "updatedAt": 1000,
+            "isArchived": false,
+            "isDeleted": true,
+            "encryptedPayload": encrypt(&key, marker),
+            "integrityHash": integrity_hash(marker)
+        }] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let (_, body) = json_request(&app, "GET", "/api/v1/sync/pull?since=0", Some(&auth_token), None).await;
+    let pulled = &body["entries"][0];
+    assert_eq!(pulled["isDeleted"], true);
+    assert_eq!(decrypt(&key, pulled["encryptedPayload"].as_str().unwrap()).unwrap(), marker);
+}

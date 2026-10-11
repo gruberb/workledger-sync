@@ -9,6 +9,7 @@ pub enum AppError {
     NotFound(String),
     BadRequest(String),
     Conflict(String),
+    PayloadTooLarge(String),
     TooManyRequests(String),
     Database(sqlx::Error),
 }
@@ -19,6 +20,7 @@ impl fmt::Display for AppError {
             AppError::NotFound(msg) => write!(f, "not found: {msg}"),
             AppError::BadRequest(msg) => write!(f, "bad request: {msg}"),
             AppError::Conflict(msg) => write!(f, "conflict: {msg}"),
+            AppError::PayloadTooLarge(msg) => write!(f, "payload too large: {msg}"),
             AppError::TooManyRequests(msg) => write!(f, "too many requests: {msg}"),
             AppError::Database(e) => write!(f, "database error: {e}"),
         }
@@ -39,6 +41,10 @@ impl IntoResponse for AppError {
             AppError::Conflict(msg) => {
                 tracing::warn!(error_type = "conflict", message = %msg, "Responding with 409");
                 (StatusCode::CONFLICT, msg)
+            }
+            AppError::PayloadTooLarge(msg) => {
+                tracing::warn!(error_type = "payload_too_large", message = %msg, "Responding with 413");
+                (StatusCode::PAYLOAD_TOO_LARGE, msg)
             }
             AppError::TooManyRequests(msg) => {
                 tracing::warn!(error_type = "too_many_requests", message = %msg, "Responding with 429");
